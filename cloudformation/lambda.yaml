@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda consumer for SQS messages + Event Source Mapping
+
+Parameters:
+  ProjectName:
+    Type: String
+
+  QueueArn:
+    Type: String
+
+  TableName:
+    Type: String
+
+  ForceFail:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+  RandomFail:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+
+Conditions:
+  HasTable: !Not [!Equals [!Ref TableName, ""]]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub "${ProjectName}-lambda-policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+              - Sid: SQSConsume
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !Ref QueueArn
+
+              - !If
+                - HasTable
+                - Sid: DynamoWrite
+                  Effect: Allow
+                  Action:
+                    - dynamodb:PutItem
+                    - dynamodb:UpdateItem
+                  Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}"
+                - !Ref AWS::NoValue
+
+  LogProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-processor"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          FORCE_FAIL: !Ref ForceFail
+          RANDOM_FAIL: !Ref RandomFail
+          TABLE_NAME: !Ref TableName
+      Code:
+        ZipFile: |
+          import json, os, random
+          import boto3
+          from datetime import datetime
+
+          ddb = boto3.client("dynamodb")
+          TABLE_NAME = os.environ.get("TABLE_NAME", "")
+
+          def lambda_handler(event, context):
+              print("Received event:", json.dumps(event))
+
+              force_fail = os.environ.get("FORCE_FAIL", "false").lower() == "true"
+              random_fail = os.environ.get("RANDOM_FAIL", "false").lower() == "true"
+
+              if force_fail:
+                  raise Exception("DLQ test - forced failure")
+
+              if random_fail and random.random() < 0.3:
+                  raise Exception("Random failure simulated")
+
+              # Store a tiny record in DynamoDB (optional)
+              if TABLE_NAME:
+                  now = datetime.utcnow().isoformat()
+                  ddb.put_item(
+                      TableName=TABLE_NAME,
+                      Item={
+                          "pk": {"S": "run"},
+                          "sk": {"S": now},
+                          "raw": {"S": json.dumps(event)[:9000]}
+                      }
+                  )
+
+              print("Message processed successfully")
+              return {"ok": True}
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref QueueArn
+      FunctionName: !GetAtt LogProcessorFunction.Arn
+      BatchSize: 1
+      Enabled: true
+
+Outputs:
+  LambdaArn:
+    Value: !GetAtt LogProcessorFunction.Arn
+
+  LambdaName:
+    Value: !Ref LogProcessorFunction

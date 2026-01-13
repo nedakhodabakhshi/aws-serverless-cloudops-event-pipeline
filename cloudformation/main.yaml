@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Serverless CloudOps Event Pipeline (S3 -> SQS -> Lambda) with DLQ and DynamoDB
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: serverless-cloudops-event-pipeline
+
+  TemplateBucketName:
+    Type: String
+    Description: S3 bucket that contains nested stack templates (uploaded by package.sh)
+
+  TemplatePrefix:
+    Type: String
+    Description: S3 prefix (folder) containing nested templates, e.g. serverless-cloudops-event-pipeline/templates
+
+  InputBucketName:
+    Type: String
+    Default: ""
+    Description: Optional. If empty, stack will auto-generate a unique bucket name.
+
+  ForceFail:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: If true, Lambda always fails (for DLQ testing)
+
+  RandomFail:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: If true, Lambda randomly fails some messages
+
+Resources:
+  SqsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateBucketName}.s3.${AWS::Region}.amazonaws.com/${TemplatePrefix}/sqs.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  DynamoDbStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateBucketName}.s3.${AWS::Region}.amazonaws.com/${TemplatePrefix}/dynamodb.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+
+  LambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - SqsStack
+      - DynamoDbStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateBucketName}.s3.${AWS::Region}.amazonaws.com/${TemplatePrefix}/lambda.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        QueueArn: !GetAtt SqsStack.Outputs.QueueArn
+        TableName: !GetAtt DynamoDbStack.Outputs.TableName
+        ForceFail: !Ref ForceFail
+        RandomFail: !Ref RandomFail
+
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - SqsStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplateBucketName}.s3.${AWS::Region}.amazonaws.com/${TemplatePrefix}/s3.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        InputBucketName: !Ref InputBucketName
+        QueueArn: !GetAtt SqsStack.Outputs.QueueArn
+        QueueUrl: !GetAtt SqsStack.Outputs.QueueUrl
+
+Outputs:
+  InputBucketName:
+    Description: S3 bucket where you upload logs/files
+    Value: !GetAtt S3Stack.Outputs.InputBucketName
+
+  MainQueueUrl:
+    Description: SQS main queue URL
+    Value: !GetAtt SqsStack.Outputs.QueueUrl
+
+  DLQUrl:
+    Description: SQS DLQ URL
+    Value: !GetAtt SqsStack.Outputs.DLQUrl
+
+  LambdaName:
+    Description: Lambda function name
+    Value: !GetAtt LambdaStack.Outputs.LambdaName
+
+  DynamoDbTableName:
+    Description: DynamoDB table name
+    Value: !GetAtt DynamoDbStack.Outputs.TableName

@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  S3 input bucket + event notification to SQS.
+  This stack ALSO attaches the required SQS QueuePolicy so S3 is allowed to SendMessage.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project prefix used for naming.
+
+  # Optional: provide a custom bucket name. If empty, a deterministic unique name is generated.
+  InputBucketName:
+    Type: String
+    Default: ""
+    Description: >
+      Optional custom S3 bucket name (must be globally unique, 3-63 chars, lowercase).
+      Leave empty to auto-generate a unique name using AccountId + Region.
+
+  QueueArn:
+    Type: String
+    Description: ARN of the SQS queue that will receive S3 event notifications.
+
+  QueueUrl:
+    Type: String
+    Description: URL of the SQS queue (required for QueuePolicy attachment).
+
+Conditions:
+  UseCustomBucketName: !Not [!Equals [!Ref InputBucketName, ""]]
+
+Resources:
+  # 1) Queue policy must exist BEFORE S3 notification config can be validated.
+  #    IMPORTANT: Do NOT reference the bucket resource here (to avoid circular dependency).
+  AllowS3ToSendMessageToQueue:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref QueueUrl
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3SendMessage
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: "SQS:SendMessage"
+            Resource: !Ref QueueArn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !If
+                  - UseCustomBucketName
+                  - !Sub "arn:aws:s3:::${InputBucketName}"
+                  - !Sub "arn:aws:s3:::${ProjectName}-input-${AWS::AccountId}-${AWS::Region}"
+
+  # 2) Create S3 bucket. It depends on the QueuePolicy to avoid "Unable to validate destination" errors.
+  InputBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: AllowS3ToSendMessageToQueue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !If
+        - UseCustomBucketName
+        - !Ref InputBucketName
+        - !Sub "${ProjectName}-input-${AWS::AccountId}-${AWS::Region}"
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Queue: !Ref QueueArn
+
+Outputs:
+  InputBucketName:
+    Description: S3 input bucket name
+    Value: !Ref InputBucket
+
+  InputBucketArn:
+    Description: S3 input bucket ARN
+    Value: !GetAtt InputBucket.Arn

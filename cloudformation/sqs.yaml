@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SQS Main Queue + DLQ for Serverless CloudOps Event Pipeline
+
+Parameters:
+  ProjectName:
+    Type: String
+
+Resources:
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-dlq"
+      MessageRetentionPeriod: 345600  # 4 days
+
+  MainQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-queue"
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+Outputs:
+  QueueArn:
+    Value: !GetAtt MainQueue.Arn
+
+  QueueUrl:
+    Value: !Ref MainQueue
+
+  QueueName:
+    Value: !GetAtt MainQueue.QueueName
+
+  DLQArn:
+    Value: !GetAtt DeadLetterQueue.Arn
+
+  DLQUrl:
+    Value: !Ref DeadLetterQueue
+
+  DLQName:
+    Value: !GetAtt DeadLetterQueue.QueueName

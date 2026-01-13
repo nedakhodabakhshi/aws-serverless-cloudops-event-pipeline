@@ -1,0 +1,11 @@
+{
+  "eventTime": "2026-01-13T11:15:00Z",
+  "source": "application-server-01",
+  "logLevel": "INFO",
+  "service": "auth-service",
+  "message": "User login successful",
+  "userId": "user-12345",
+  "requestId": "req-abc-987654",
+  "ipAddress": "192.168.1.10",
+  "environment": "dev"
+}
